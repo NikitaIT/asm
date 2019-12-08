@@ -1,8 +1,14 @@
 from codecs import getdecoder
 from codecs import getencoder
 from sys import version_info
+# https://xakep.ru/2017/02/02/working-with-grasshopper/ пояснения к другому варианту на плюсах(увы платный контент)
 
-
+# Функция xrange() в Python очень похожа на функцию range() за тем лишь исключением,
+# что вместо списка создает объект xrange. Производит те же элементы,
+# что и range(), но не сохраняет их. Преимущества использования xrange()
+# вместо range() заметны лишь при при работе с огромным количеством элементов или в ситуации,
+# когда сами по себе созданные элементы нами не используются, нам не нужно изменять их или
+# порядок в котором они расположены.
 xrange = range if version_info[0] == 3 else xrange  # pylint: disable=redefined-builtin
 
 _hexdecoder = getdecoder("hex")
@@ -93,7 +99,7 @@ def mac(encrypter, bs, data):
     :param int bs: cipher's blocksize
     :param bytes data: data to authenticate
 
-    Implementation is based on PyCrypto's CMAC one, that is in public domain.
+    Implementation is based on CMAC.
     """
     k1, k2 = _mac_ks(encrypter, bs)
     if len(data) % bs == 0:
@@ -116,9 +122,12 @@ def _mac_ks(encrypter, bs):
     k1 = _mac_shift(bs, _l, Rb) if bytearray(_l)[0] & 0x80 > 0 else _mac_shift(bs, _l)
     k2 = _mac_shift(bs, k1, Rb) if bytearray(k1)[0] & 0x80 > 0 else _mac_shift(bs, k1)
     return k1, k2
+
+#Для реализации R-преобразования сначала определим массив нужных нам коэффициентов:
 LC = bytearray((
     148, 32, 133, 16, 194, 192, 1, 251, 1, 192, 194, 16, 133, 32, 148, 1,
 ))
+#Массив S-преобразований аналогичен ГОСТ 34.11—2012
 PI = bytearray((
     252, 238, 221, 17, 207, 110, 49, 22, 251, 196, 250, 218, 35, 197, 4, 77,
     233, 119, 240, 219, 147, 46, 153, 186, 23, 54, 241, 187, 20, 205, 95, 193,
@@ -139,17 +148,23 @@ PI = bytearray((
 ))
 
 C = []
+#Поскольку нам нужно не только зашифровывать сообщения, но и расшифровывать тоже,
+# то каждому преобразованию зашифрования необходимо ставить в соответствие обратное преобразование для расшифрования.
+# Сама функция обратного S-преобразования выглядит практически так же, как и прямое S-преобразование
 PIinv = bytearray(256)
 for x in xrange(256):
     PIinv[PI[x]] = x
-
+#Для выполнения данного преобразования необходима функция умножения чисел в конечном поле (или поле Галуа)
+# над неприводимым полиномом x^8 + x^7 + x^6 + x + 1.
+# Это самое сложное место для понимания в данном стандарте (даже Википедия не очень помогает).
+# Реализуется это следующим образом:
 def gf(a, b):
     c = 0
     while b:
         if b & 1:
             c ^= a
         if a & 0x80:
-            a = (a << 1) ^ 0x1C3
+            a = (a << 1) ^ 0x1C3 # Полином x^8 + x^7 + x^6 + x + 1
         else:
             a <<= 1
         b >>= 1
@@ -162,23 +177,31 @@ for x in xrange(256):
     for y in xrange(256):
         GF[x][y] = gf(x, y)
 
-
+#Линейное преобразование L образуется сдвигом регистра 16 раз, или шестнадцатикратным повторением функции
 def L(blk, rounds=16):
     for _ in range(rounds):
         t = blk[15]
         for i in range(14, -1, -1):
-            blk[i + 1] = blk[i]
+            blk[i + 1] = blk[i] # Двигаем байты в сторону младшего разряда
             t ^= GF[blk[i]][LC[i]]
+        # Пишем в последний байт результат сложения
         blk[0] = t
     return blk
 
-
+# R-преобразования: Далее, используя приведенную выше функцию,
+# является частью линейного преобразования L.
+# Преобразование R выполняется с использованием линейного регистра сдвига с обратной связью.
+# Каждый байт из блока умножается с помощью GF на один из коэффициентов из ряда
+# (148, 32, 133, 16, 194, 192, 1, 251, 1, 192, 194, 16, 133, 32, 148, 1) в зависимости от порядкового номера байта.
+# Байты складываются между собой по модулю 2, и все 16 байт блока сдвигаются в сторону младшего разряда,
+# а полученное число записывается на место считанного байта.
 def Linv(blk):
     for _ in range(16):
         t = blk[0]
         for i in range(15):
-            blk[i] = blk[i + 1]
+            blk[i] = blk[i + 1] # Двигаем байты в сторону младшего разряда
             t ^= GF[blk[i]][LC[i]]
+        # Пишем в последний байт результат сложения
         blk[15] = t
     return blk
 
@@ -233,11 +256,18 @@ class Main:
     plaintext += "00112233445566778899aabbcceeff0a"
     plaintext += "112233445566778899aabbcceeff0a00"
     plaintext += "2233445566778899aabbcceeff0a0011"
-    iv = hexdec("1234567890abcef0a1b2c3d4e5f0011223344556677889901213141516171819")
+
+    def test2(self):
+        c = self.ciph.encrypt(hexdec("8899aabbccddeeff08899aabbccddeef"))
+        print("было:", "8899aabbccddeeff08899aabbccddeef")
+        print("закодировали:", hexenc(c))
+        print("разкодировали", hexenc(self.ciph.decrypt(c)))
 
     def test(self):
         k1, k2 = _mac_ks(self.ciph.encrypt, 16)
         print(hexenc(k1), "297d82bc4d39e3ca0de0573298151dc7")
+        print(hexenc(k2), "52fb05789a73c7941bc0ae65302a3b8e")
+        print(hexenc(k2), "52fb05789a73c7941bc0ae65302a3b8e")
         print(hexenc(k2), "52fb05789a73c7941bc0ae65302a3b8e")
         print(
             hexenc(mac(self.ciph.encrypt, 16, hexdec(self.plaintext))[:8]),
@@ -247,6 +277,7 @@ class Main:
 def main():
     lamport = Main()
     lamport.test()
+    lamport.test2()
 
 
 if __name__ == "__main__":
